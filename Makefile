@@ -331,17 +331,6 @@ local-deploy: ## Deploy Kuadrant Operator in the cluster pointed by KUBECONFIG
 	$(KIND) load docker-image $(IMAGE_TAG_BASE):dev --name $(KIND_CLUSTER_NAME)
 	$(MAKE) deploy IMG=$(IMAGE_TAG_BASE):dev
 	kubectl -n $(KUADRANT_NAMESPACE) wait --timeout=300s --for=condition=Available deployments --all
-	@echo
-	@echo "Now you can export the kuadrant gateway by doing:"
-	@echo "kubectl port-forward -n istio-system service/istio-ingressgateway-istio 9080:80 &"
-	@echo "export GATEWAY_URL=localhost:9080"
-	@echo "after that, you can curl -H \"Host: myhost.com\" \$$GATEWAY_URL"
-	@echo "-- Linux only -- Ingress gateway is exported using loadbalancer service in port 80"
-	@echo "export INGRESS_HOST=\$$(kubectl get gtw istio-ingressgateway -n istio-system -o jsonpath='{.status.addresses[0].value}')"
-	@echo "export INGRESS_PORT=\$$(kubectl get gtw istio-ingressgateway -n istio-system -o jsonpath='{.spec.listeners[?(@.name==\"http\")].port}')"
-	@echo "export GATEWAY_URL=\$$INGRESS_HOST:\$$INGRESS_PORT"
-	@echo "curl -H \"Host: myhost.com\" \$$GATEWAY_URL"
-	@echo
 
 .PHONY: local-setup
 local-setup: $(KIND) ## Deploy locally kuadrant operator from the current code
@@ -353,16 +342,16 @@ local-cleanup: ## Delete local cluster
 	$(MAKE) kind-delete-cluster
 
 .PHONY: local-cluster-setup
-local-cluster-setup: ## Sets up Kind cluster with GatewayAPI manifests and istio GW, nothing Kuadrant.
+local-cluster-setup: ## Sets up Kind cluster with GatewayAPI manifests and Envoy Gateway, nothing Kuadrant.
 	$(MAKE) kind-delete-cluster
 	$(MAKE) kind-create-cluster
 	$(MAKE) deploy-metrics-server
 	$(MAKE) namespace
-	$(MAKE) gateway-api-install
 	$(MAKE) install-metallb
-	$(MAKE) istio-install
+	$(MAKE) envoy-gateway-install
 	$(MAKE) install-cert-manager
-	$(MAKE) deploy-gateway
+	$(MAKE) deploy-eg-gateway
+	#$(MAKE) deploy-gateway
 
 # kuadrant is not deployed
 .PHONY: local-env-setup
@@ -376,7 +365,7 @@ test-env-setup: ## Deploys all services and manifests required by kuadrant to ru
 	$(MAKE) namespace
 	$(MAKE) gateway-api-install
 	$(MAKE) install-metallb
-	$(MAKE) istio-install
+	$(MAKE) envoy-gateway-install
 	$(MAKE) install-cert-manager
 	$(MAKE) deploy-gateway
 	$(MAKE) deploy-dependencies
