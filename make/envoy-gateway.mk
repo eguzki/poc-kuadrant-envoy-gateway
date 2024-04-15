@@ -8,15 +8,15 @@ EG_NAMESPACE = envoy-gateway-system
 
 # egctl tool
 EGCTL=$(PROJECT_PATH)/bin/egctl
-EG_VERSION = v1.0.0
+EGCTL_VERSION ?= v1.0.0
 OS = linux
 ARCH = amd64
 $(EGCTL):
 	mkdir -p $(PROJECT_PATH)/bin
 	## get-egctl.sh requires sudo and does not allow installing in a custom location. Fails if not in the PATH as well
-	# curl -sSL https://gateway.envoyproxy.io/get-egctl.sh | EGCTL_INSTALL_DIR=$(PROJECT_PATH)/bin  VERSION=$(EG_VERSION) bash
+	# curl -sSL https://gateway.envoyproxy.io/get-egctl.sh | EGCTL_INSTALL_DIR=$(PROJECT_PATH)/bin  VERSION=$(EGCTL_VERSION) bash
 	$(eval TMP := $(shell mktemp -d))
-	cd $(TMP); curl -sSL https://github.com/envoyproxy/gateway/releases/download/$(EG_VERSION)/egctl_$(EG_VERSION)_$(OS)_$(ARCH).tar.gz -o egctl.tar.gz
+	cd $(TMP); curl -sSL https://github.com/envoyproxy/gateway/releases/download/$(EGCTL_VERSION)/egctl_$(EGCTL_VERSION)_$(OS)_$(ARCH).tar.gz -o egctl.tar.gz
 	tar xf $(TMP)/egctl.tar.gz -C $(TMP)
 	cp $(TMP)/bin/$(OS)/$(ARCH)/egctl $(EGCTL)
 	-rm -rf $(TMP)
@@ -24,14 +24,11 @@ $(EGCTL):
 .PHONY: egctl
 egctl: $(EGCTL) ## Download egctl locally if necessary.
 
+EG_VERSION ?= v0.0.0-latest
 .PHONY: envoy-gateway-install
 envoy-gateway-install: kustomize
-	$(KUSTOMIZE) build $(EG_CONFIG_DIR) | kubectl apply -f -
+	$(HELM) install eg oci://docker.io/envoyproxy/gateway-helm --version $(EG_VERSION) -n envoy-gateway-system --create-namespace
 	kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available
-
-.PHONY: envoy-gateway-uninstall
-envoy-gateway-uninstall: kustomize ## Uninstall envoy gateway.
-	$(KUSTOMIZE) build $(EG_CONFIG_DIR) | kubectl delete -f -
 
 .PHONY: deploy-eg-gateway
 deploy-eg-gateway: kustomize ## Deploy Gateway API gateway
