@@ -45,7 +45,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayapiv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	maistraapis "github.com/kuadrant/kuadrant-operator/api/external/maistra"
 	kuadrantv1alpha1 "github.com/kuadrant/kuadrant-operator/api/v1alpha1"
@@ -74,7 +74,7 @@ func init() {
 	utilruntime.Must(istionetworkingv1alpha3.AddToScheme(scheme))
 	utilruntime.Must(istiosecurityv1beta1.AddToScheme(scheme))
 	utilruntime.Must(gatewayapiv1.Install(scheme))
-	utilruntime.Must(gatewayapiv1alpha2.Install(scheme))
+	utilruntime.Must(gatewayapiv1beta1.Install(scheme))
 	utilruntime.Must(istioextensionv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(apiextv1.AddToScheme(scheme))
 	utilruntime.Must(istioapis.AddToScheme(scheme))

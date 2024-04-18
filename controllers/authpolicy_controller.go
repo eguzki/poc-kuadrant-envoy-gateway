@@ -34,6 +34,8 @@ type AuthPolicyReconciler struct {
 //+kubebuilder:rbac:groups=kuadrant.io,resources=authpolicies/finalizers,verbs=update
 //+kubebuilder:rbac:groups=kuadrant.io,resources=authpolicies/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=security.istio.io,resources=authorizationpolicies,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=securitypolicies,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=authorino.kuadrant.io,resources=authconfigs,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AuthPolicyReconciler) Reconcile(eventCtx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -159,7 +161,11 @@ func (r *AuthPolicyReconciler) reconcileResources(ctx context.Context, ap *api.A
 		return err
 	}
 
-	if err := r.reconcileIstioAuthorizationPolicies(ctx, ap, targetNetworkObject, gatewayDiffObj); err != nil {
+	// if err := r.reconcileIstioAuthorizationPolicies(ctx, ap, targetNetworkObject, gatewayDiffObj); err != nil {
+	// 	return err
+	// }
+
+	if err := r.reconcileEnvoySecurityPolicies(ctx, ap, targetNetworkObject, gatewayDiffObj); err != nil {
 		return err
 	}
 
@@ -183,7 +189,10 @@ func (r *AuthPolicyReconciler) deleteResources(ctx context.Context, ap *api.Auth
 		return err
 	}
 
-	if err := r.deleteIstioAuthorizationPolicies(ctx, ap, gatewayDiffObj); err != nil {
+	// if err := r.deleteIstioAuthorizationPolicies(ctx, ap, gatewayDiffObj); err != nil {
+	// 	return err
+	// }
+	if err := r.deleteEnvoySecurityPolicies(ctx, ap, gatewayDiffObj); err != nil {
 		return err
 	}
 
