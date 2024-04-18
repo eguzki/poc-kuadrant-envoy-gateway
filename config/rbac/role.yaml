@@ -126,6 +126,7 @@ rules:
   - gateway.envoyproxy.io
   resources:
   - envoypatchpolicies
+  - securitypolicies
   verbs:
   - create
   - delete
@@ -165,6 +166,18 @@ rules:
   resources:
   - httproutes
   verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - referencegrants
+  verbs:
+  - create
+  - delete
   - get
   - list
   - patch
