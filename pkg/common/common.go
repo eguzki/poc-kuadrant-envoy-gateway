@@ -25,10 +25,11 @@ import (
 
 // TODO: move the const to a proper place, or get it from config
 const (
-	KuadrantRateLimitClusterName = "kuadrant-rate-limiting-service"
-	AuthPolicyBackRefAnnotation  = "kuadrant.io/authpolicy"
-	NamespaceSeparator           = '/'
-	LimitadorName                = "limitador"
+	KuadrantRateLimitClusterName   = "kuadrant-rate-limiting-service"
+	RateLimitWasmSourceClusterName = "kuadrant-rate-limiting-wasm-source"
+	AuthPolicyBackRefAnnotation    = "kuadrant.io/authpolicy"
+	NamespaceSeparator             = '/'
+	LimitadorName                  = "limitador"
 )
 
 // MergeMapStringString Merge desired into existing.

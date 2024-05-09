@@ -1,6 +1,6 @@
 //go:build unit
 
-package rlptools
+package wasm
 
 import (
 	"testing"

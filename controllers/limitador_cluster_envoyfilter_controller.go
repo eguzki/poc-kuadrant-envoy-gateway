@@ -22,21 +22,19 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	limitadorv1alpha1 "github.com/kuadrant/limitador-operator/api/v1alpha1"
 	istioapinetworkingv1alpha3 "istio.io/api/networking/v1alpha3"
 	istioclientnetworkingv1alpha3 "istio.io/client-go/pkg/apis/networking/v1alpha3"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	kuadrantv1beta1 "github.com/kuadrant/kuadrant-operator/api/v1beta1"
 	"github.com/kuadrant/kuadrant-operator/api/v1beta2"
-	"github.com/kuadrant/kuadrant-operator/pkg/common"
 	kuadrantistioutils "github.com/kuadrant/kuadrant-operator/pkg/istio"
+	"github.com/kuadrant/kuadrant-operator/pkg/kuadranttools"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/kuadrant"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/reconcilers"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/utils"
@@ -76,8 +74,23 @@ func (r *LimitadorClusterEnvoyFilterReconciler) Reconcile(eventCtx context.Conte
 		logger.V(1).Info(string(jsonData))
 	}
 
-	err := r.reconcileRateLimitingClusterEnvoyFilter(ctx, gw)
+	kObj, err := kuadranttools.KuadrantFromGateway(ctx, r.Client(), gw)
+	if err != nil {
+		logger.Info("failed to read kuadrant instance")
+		return ctrl.Result{}, err
+	}
 
+	if kObj == nil {
+		logger.Info("kuadrant instance not found, maybe not the gateway is not assigned to kuadrant")
+		return ctrl.Result{}, nil
+	}
+
+	desired, err := r.desiredRateLimitingClusterEnvoyFilter(ctx, gw, kObj)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	err = r.ReconcileResource(ctx, &istioclientnetworkingv1alpha3.EnvoyFilter{}, desired, kuadrantistioutils.AlwaysUpdateEnvoyFilter)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -86,21 +99,7 @@ func (r *LimitadorClusterEnvoyFilterReconciler) Reconcile(eventCtx context.Conte
 	return ctrl.Result{}, nil
 }
 
-func (r *LimitadorClusterEnvoyFilterReconciler) reconcileRateLimitingClusterEnvoyFilter(ctx context.Context, gw *gatewayapiv1.Gateway) error {
-	desired, err := r.desiredRateLimitingClusterEnvoyFilter(ctx, gw)
-	if err != nil {
-		return err
-	}
-
-	err = r.ReconcileResource(ctx, &istioclientnetworkingv1alpha3.EnvoyFilter{}, desired, kuadrantistioutils.AlwaysUpdateEnvoyFilter)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *LimitadorClusterEnvoyFilterReconciler) desiredRateLimitingClusterEnvoyFilter(ctx context.Context, gw *gatewayapiv1.Gateway) (*istioclientnetworkingv1alpha3.EnvoyFilter, error) {
+func (r *LimitadorClusterEnvoyFilterReconciler) desiredRateLimitingClusterEnvoyFilter(ctx context.Context, gw *gatewayapiv1.Gateway, kObj *kuadrantv1beta1.Kuadrant) (*istioclientnetworkingv1alpha3.EnvoyFilter, error) {
 	logger, err := logr.FromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -132,21 +131,9 @@ func (r *LimitadorClusterEnvoyFilterReconciler) desiredRateLimitingClusterEnvoyF
 		return ef, nil
 	}
 
-	kuadrantNamespace, err := kuadrant.GetKuadrantNamespace(gw)
+	limitador, err := kuadranttools.LimitadorLocation(ctx, r.Client(), kObj)
 	if err != nil {
 		return nil, err
-	}
-
-	limitadorKey := client.ObjectKey{Name: common.LimitadorName, Namespace: kuadrantNamespace}
-	limitador := &limitadorv1alpha1.Limitador{}
-	err = r.Client().Get(ctx, limitadorKey, limitador)
-	logger.V(1).Info("desiredRateLimitingClusterEnvoyFilter", "get limitador", limitadorKey, "err", err)
-	if err != nil {
-		return nil, err
-	}
-
-	if !meta.IsStatusConditionTrue(limitador.Status.Conditions, "Ready") {
-		return nil, fmt.Errorf("limitador Status not ready")
 	}
 
 	configPatches, err := kuadrantistioutils.LimitadorClusterPatch(limitador.Status.Service.Host, int(limitador.Status.Service.Ports.GRPC))

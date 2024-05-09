@@ -32,7 +32,6 @@ import (
 
 	kuadrantv1beta1 "github.com/kuadrant/kuadrant-operator/api/v1beta1"
 	"github.com/kuadrant/kuadrant-operator/pkg/common"
-	kuadrantistioutils "github.com/kuadrant/kuadrant-operator/pkg/istio"
 	"github.com/kuadrant/kuadrant-operator/pkg/kuadranttools"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/reconcilers"
 	"github.com/kuadrant/kuadrant-operator/pkg/log"
@@ -94,10 +93,6 @@ func (r *KuadrantReconciler) Reconcile(eventCtx context.Context, req ctrl.Reques
 	if kObj.GetDeletionTimestamp() != nil && controllerutil.ContainsFinalizer(kObj, kuadrantFinalizer) {
 		logger.V(1).Info("Handling removal of kuadrant object")
 
-		if err := kuadrantistioutils.UnregisterExternalAuthorizer(ctx, r.Client(), kObj.Namespace); err != nil {
-			return ctrl.Result{}, err
-		}
-
 		logger.Info("removing finalizer")
 		controllerutil.RemoveFinalizer(kObj, kuadrantFinalizer)
 		if err := r.Client().Update(ctx, kObj); client.IgnoreNotFound(err) != nil {
@@ -141,10 +136,6 @@ func (r *KuadrantReconciler) Reconcile(eventCtx context.Context, req ctrl.Reques
 }
 
 func (r *KuadrantReconciler) reconcileSpec(ctx context.Context, kObj *kuadrantv1beta1.Kuadrant) error {
-	if err := kuadrantistioutils.RegisterExternalAuthorizer(ctx, r.Client(), kObj, r.Scheme()); err != nil {
-		return err
-	}
-
 	if err := r.reconcileLimitador(ctx, kObj); err != nil {
 		return err
 	}

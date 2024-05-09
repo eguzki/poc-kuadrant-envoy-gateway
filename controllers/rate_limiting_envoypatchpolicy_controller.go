@@ -20,42 +20,41 @@ import (
 	"context"
 	"encoding/json"
 
+	egv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/go-logr/logr"
-	istioextensionsv1alpha1 "istio.io/api/extensions/v1alpha1"
-	istioclientgoextensionv1alpha1 "istio.io/client-go/pkg/apis/extensions/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/env"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
+	kuadrantv1beta1 "github.com/kuadrant/kuadrant-operator/api/v1beta1"
 	kuadrantv1beta2 "github.com/kuadrant/kuadrant-operator/api/v1beta2"
-	kuadrantistioutils "github.com/kuadrant/kuadrant-operator/pkg/istio"
+	kuadrantenvoygateway "github.com/kuadrant/kuadrant-operator/pkg/envoygateway"
+	"github.com/kuadrant/kuadrant-operator/pkg/kuadranttools"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/mappers"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/reconcilers"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/utils"
 	"github.com/kuadrant/kuadrant-operator/pkg/rlptools/wasm"
 )
 
-var (
-	WASMFilterImageURL = env.GetString("RELATED_IMAGE_WASMSHIM", "oci://quay.io/kuadrant/wasm-shim:latest")
-)
-
-// RateLimitingWASMPluginReconciler reconciles a WASMPlugin object for rate limiting
-type RateLimitingWASMPluginReconciler struct {
+// RateLimitingEnvoyPatchPolicyReconciler reconciles an EnvoyPatchPolicy object for rate limiting
+// https://gateway.envoyproxy.io/latest/api/extension_types/#envoypatchpolicy
+type RateLimitingEnvoyPatchPolicyReconciler struct {
 	*reconcilers.BaseReconciler
 }
 
-//+kubebuilder:rbac:groups=extensions.istio.io,resources=wasmplugins,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=envoypatchpolicies,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=kuadrant.io,resources=ratelimitpolicies,verbs=get;list;watch;update;patch
 
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.10.0/pkg/reconcile
-func (r *RateLimitingWASMPluginReconciler) Reconcile(eventCtx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *RateLimitingEnvoyPatchPolicyReconciler) Reconcile(eventCtx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := r.Logger().WithValues("Gateway", req.NamespacedName)
 	logger.Info("Reconciling rate limiting WASMPlugin")
 	ctx := logr.NewContext(eventCtx, logger)
@@ -78,80 +77,111 @@ func (r *RateLimitingWASMPluginReconciler) Reconcile(eventCtx context.Context, r
 		logger.V(1).Info(string(jsonData))
 	}
 
-	desired, err := r.desiredRateLimitingWASMPlugin(ctx, gw)
+	kObj, err := kuadranttools.KuadrantFromGateway(ctx, r.Client(), gw)
+	if err != nil {
+		logger.Info("failed to read kuadrant instance")
+		return ctrl.Result{}, err
+	}
+
+	if kObj == nil {
+		logger.Info("kuadrant instance not found, maybe not the gateway is not assigned to kuadrant")
+		return ctrl.Result{}, nil
+	}
+
+	desired, err := r.desiredEnvoyPatchPolicy(ctx, gw, kObj)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	err = r.ReconcileResource(ctx, &istioclientgoextensionv1alpha1.WasmPlugin{}, desired, kuadrantistioutils.WASMPluginMutator)
+	// TODO Mutator!! -> support upgrade
+	err = r.ReconcileResource(ctx, &egv1alpha1.EnvoyPatchPolicy{}, desired, reconcilers.CreateOnlyMutator)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Rate limiting WASMPlugin reconciled successfully")
+	logger.Info("Rate limiting envoypatchpolicy reconciled successfully")
 	return ctrl.Result{}, nil
 }
 
-func (r *RateLimitingWASMPluginReconciler) desiredRateLimitingWASMPlugin(ctx context.Context, gw *gatewayapiv1.Gateway) (*istioclientgoextensionv1alpha1.WasmPlugin, error) {
+func (r *RateLimitingEnvoyPatchPolicyReconciler) desiredEnvoyPatchPolicy(ctx context.Context, gw *gatewayapiv1.Gateway, kObj *kuadrantv1beta1.Kuadrant) (*egv1alpha1.EnvoyPatchPolicy, error) {
 	baseLogger, err := logr.FromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	wasmPlugin := &istioclientgoextensionv1alpha1.WasmPlugin{
+	pathPolicy := &egv1alpha1.EnvoyPatchPolicy{
 		TypeMeta: metav1.TypeMeta{
-			Kind:       "WasmPlugin",
-			APIVersion: "extensions.istio.io/v1alpha1",
+			Kind:       "EnvoyPatchPolicy",
+			APIVersion: egv1alpha1.GroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      kuadrantistioutils.WASMPluginName(gw),
+			Name:      kuadrantenvoygateway.RateLimitEnvoyPatchPolicyName(gw),
 			Namespace: gw.Namespace,
 		},
-		Spec: istioextensionsv1alpha1.WasmPlugin{
-			Selector:     kuadrantistioutils.WorkloadSelectorFromGateway(ctx, r.Client(), gw),
-			Url:          WASMFilterImageURL,
-			PluginConfig: nil,
-			// Insert plugin before Istio stats filters and after Istio authorization filters.
-			Phase: istioextensionsv1alpha1.PluginPhase_STATS,
+		Spec: egv1alpha1.EnvoyPatchPolicySpec{
+			TargetRef: gwapiv1a2.PolicyTargetReference{
+				Group:     gatewayapiv1.GroupName,
+				Kind:      "Gateway",
+				Name:      gatewayapiv1.ObjectName(gw.Name),
+				Namespace: ptr.To(gatewayapiv1.Namespace(gw.Namespace)),
+			},
+			Type:        egv1alpha1.JSONPatchEnvoyPatchType,
+			JSONPatches: nil,
 		},
 	}
 
-	logger := baseLogger.WithValues("wasmplugin", client.ObjectKeyFromObject(wasmPlugin))
+	logger := baseLogger.WithValues("envoypatchpolicy", client.ObjectKeyFromObject(pathPolicy))
 
-	pluginConfig, err := wasm.ConfigFromGateway(ctx, r.Client(), gw)
+	//
+	// Limitador Service Cluster patch
+	//
+	limitador, err := kuadranttools.LimitadorLocation(ctx, r.Client(), kObj)
+	if err != nil {
+		return nil, err
+	}
+	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches,
+		kuadrantenvoygateway.LimitadorClusterPatch(
+			limitador.Status.Service.Host,
+			int(limitador.Status.Service.Ports.GRPC),
+		),
+	)
+
+	//
+	// Wasm Binary Cluster patch
+	//
+	wasmConfig, err := wasm.ConfigFromGateway(ctx, r.Client(), gw)
 	if err != nil {
 		return nil, err
 	}
 
-	if pluginConfig == nil || len(pluginConfig.RateLimitPolicies) == 0 {
-		logger.V(1).Info("pluginConfig is empty. Wasmplugin will be deleted if it exists")
-		utils.TagObjectToDelete(wasmPlugin)
-		return wasmPlugin, nil
+	if wasmConfig == nil || len(wasmConfig.RateLimitPolicies) == 0 {
+		logger.V(1).Info("wasmConfig is empty. EnvoyPatchPolicy will be deleted if it exists")
+		utils.TagObjectToDelete(pathPolicy)
+		return pathPolicy, nil
 	}
+	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches, kuadrantenvoygateway.WasmFilterPatch(wasmConfig))
 
-	pluginConfigStruct, err := kuadrantistioutils.WasmConfigToStruct(pluginConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	wasmPlugin.Spec.PluginConfig = pluginConfigStruct
+	//
+	// Wasm Binary Cluster patch
+	//
+	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches, kuadrantenvoygateway.WasmBinarySourceClusterPatch())
 
 	// controller reference
-	if err := r.SetOwnerReference(gw, wasmPlugin); err != nil {
+	if err := r.SetOwnerReference(gw, pathPolicy); err != nil {
 		return nil, err
 	}
 
-	return wasmPlugin, nil
+	return nil, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *RateLimitingWASMPluginReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	ok, err := kuadrantistioutils.IsIstioWASMPluginInstalled(mgr.GetRESTMapper())
+func (r *RateLimitingEnvoyPatchPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	ok, err := kuadrantenvoygateway.IsEnvoyGatewayEnvoyPatchPolicyInstalled(mgr.GetRESTMapper())
 	if err != nil {
 		return err
 	}
 	if !ok {
-		r.Logger().Info("Istio WasmPlugin controller disabled. Istio was not found")
+		r.Logger().Info("EnvoyGateway EnvoyPatchPolicy controller disabled. API was not found")
 		return nil
 	}
 
@@ -165,15 +195,13 @@ func (r *RateLimitingWASMPluginReconciler) SetupWithManager(mgr ctrl.Manager) er
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		// Rate limiting WASMPlugin controller only cares about
+		// Rate limiting EnvoyGateway EnvoyPatchPolicy controller only cares about
 		// Gateway API Gateway
 		// Gateway API HTTPRoutes
 		// Kuadrant RateLimitPolicies
 
-		// The type of object being *reconciled* is the Gateway.
-		// TODO(eguzki): consider having the WasmPlugin as the type of object being *reconciled*
 		For(&gatewayapiv1.Gateway{}).
-		Owns(&istioclientgoextensionv1alpha1.WasmPlugin{}).
+		Owns(&egv1alpha1.EnvoyPatchPolicy{}).
 		Watches(
 			&gatewayapiv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(httpRouteToParentGatewaysEventMapper.Map),
