@@ -79,18 +79,18 @@ func LimitadorClusterPatch(limitadorSvcHost string, limitadorGRPCPort int) egv1a
 	}
 }
 
-func WasmBinarySourceClusterPatch(host string, port int) egv1alpha1.EnvoyJSONPatchConfig {
+func WasmBinarySourceClusterPatch(name, host string, port int) egv1alpha1.EnvoyJSONPatchConfig {
 	// The patch defines the Wasm binary source cluster,
 	// TLS enabled
 	patchUnstructured := map[string]any{
-		"name":                   common.RateLimitWasmSourceClusterName,
+		"name":                   name,
 		"type":                   "STRICT_DNS",
 		"connect_timeout":        "1s",
+		"dns_refresh_rate":       "5s",
 		"dns_lookup_family":      "V4_ONLY",
-		"lb_policy":              "ROUND_ROBIN",
 		"http2_protocol_options": map[string]any{},
 		"load_assignment": map[string]any{
-			"cluster_name": common.RateLimitWasmSourceClusterName,
+			"cluster_name": name,
 			"endpoints": []map[string]any{
 				{
 					"lb_endpoints": []map[string]any{
@@ -127,6 +127,54 @@ func WasmBinarySourceClusterPatch(host string, port int) egv1alpha1.EnvoyJSONPat
 		Operation: egv1alpha1.JSONPatchOperation{
 			Op:    egv1alpha1.JSONPatchOperationType("add"),
 			Path:  "",
+			Value: value,
+		},
+	}
+}
+
+func WasmFilterPatch(gw *gatewayapiv1.Gateway, uri, sha256, wasmBinarySourceClusterName, wasmConfig string) egv1alpha1.EnvoyJSONPatchConfig {
+	// The patch defines the Wasm binary source cluster,
+	// TLS enabled
+	patchUnstructured := map[string]any{
+		"name": "kuadrant.ratelimiting.wasm",
+		"typed_config": map[string]any{
+			"@type": "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm",
+			"config": map[string]any{
+				"name":    "kuadrant.ratelimiting",
+				"root_id": "kuadrant_ratelimiting",
+				"vm_config": map[string]any{
+					"vm_id":   "kuadrant_ratelimiting_vm_id",
+					"runtime": "envoy.wasm.runtime.v8",
+					"code": map[string]any{
+						"remote": map[string]any{
+							"sha256": sha256,
+							"http_uri": map[string]any{
+								"uri":     uri,
+								"cluster": wasmBinarySourceClusterName,
+								"timeout": "10s",
+							},
+						},
+					},
+				},
+				"configuration": map[string]any{
+					"@type": "type.googleapis.com/google.protobuf.StringValue",
+					"value": wasmConfig,
+				},
+			},
+		},
+	}
+
+	patchRaw, _ := json.Marshal(patchUnstructured)
+	value := &apiextensionsv1.JSON{}
+	value.UnmarshalJSON(patchRaw)
+
+	return egv1alpha1.EnvoyJSONPatchConfig{
+		Type: egv1alpha1.ListenerEnvoyResourceType,
+		// The listener name is of the form <GatewayNamespace>/<GatewayName>/<GatewayListenerName>
+		Name: fmt.Sprintf("%s/%s/http", gw.Namespace, gw.Name),
+		Operation: egv1alpha1.JSONPatchOperation{
+			Op:    egv1alpha1.JSONPatchOperationType("add"),
+			Path:  "/default_filter_chain/filters/0/typed_config/http_filters/0",
 			Value: value,
 		},
 	}

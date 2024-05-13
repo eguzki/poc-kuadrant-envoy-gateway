@@ -23,6 +23,7 @@ import (
 	"runtime"
 
 	certmanv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	egv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	authorinoopapi "github.com/kuadrant/authorino-operator/api/v1beta1"
 	authorinoapi "github.com/kuadrant/authorino/api/v1beta2"
 	kuadrantdnsv1alpha1 "github.com/kuadrant/dns-operator/api/v1alpha1"
@@ -80,6 +81,7 @@ func init() {
 	utilruntime.Must(kuadrantv1beta2.AddToScheme(scheme))
 	utilruntime.Must(kuadrantdnsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(certmanv1.AddToScheme(scheme))
+	utilruntime.Must(egv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 
 	logger := log.NewLogger(
@@ -245,6 +247,19 @@ func main() {
 		BaseReconciler: rateLimitingWASMPluginBaseReconciler,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RateLimitingWASMPlugin")
+		os.Exit(1)
+	}
+
+	rateLimitingEnvoyPatchPolicyBaseReconciler := reconcilers.NewBaseReconciler(
+		mgr.GetClient(), mgr.GetScheme(), mgr.GetAPIReader(),
+		log.Log.WithName("ratelimitpolicy").WithName("envoypatchpolicy"),
+		mgr.GetEventRecorderFor("RateLimitingEnvoyPatchPolicy"),
+	)
+
+	if err = (&controllers.RateLimitingEnvoyPatchPolicyReconciler{
+		BaseReconciler: rateLimitingEnvoyPatchPolicyBaseReconciler,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RateLimitingEnvoyPatchPolicy")
 		os.Exit(1)
 	}
 

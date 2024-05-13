@@ -56,7 +56,7 @@ type RateLimitingEnvoyPatchPolicyReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.10.0/pkg/reconcile
 func (r *RateLimitingEnvoyPatchPolicyReconciler) Reconcile(eventCtx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := r.Logger().WithValues("Gateway", req.NamespacedName)
-	logger.Info("Reconciling rate limiting WASMPlugin")
+	logger.Info("Reconciling rate limiting EnvoyPatchPolicy")
 	ctx := logr.NewContext(eventCtx, logger)
 
 	gw := &gatewayapiv1.Gateway{}
@@ -147,7 +147,7 @@ func (r *RateLimitingEnvoyPatchPolicyReconciler) desiredEnvoyPatchPolicy(ctx con
 	)
 
 	//
-	// Wasm Binary Cluster patch
+	// Wasm filter patch
 	//
 	wasmConfig, err := wasm.ConfigFromGateway(ctx, r.Client(), gw)
 	if err != nil {
@@ -159,19 +159,34 @@ func (r *RateLimitingEnvoyPatchPolicyReconciler) desiredEnvoyPatchPolicy(ctx con
 		utils.TagObjectToDelete(pathPolicy)
 		return pathPolicy, nil
 	}
-	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches, kuadrantenvoygateway.WasmFilterPatch(wasmConfig))
+	wasmConfigJSON, err := json.Marshal(wasmConfig)
+	if err != nil {
+		return nil, err
+	}
+	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches, kuadrantenvoygateway.WasmFilterPatch(
+		gw,
+		"https://raw.githubusercontent.com/Kuadrant/wasm-shim/release-binaries/releases/kuadrant-ratelimit-wasm-v0.4.0-alpha.1",
+		"b101508ddd5fd40eb2116204e6c768332a359c21feb2dbb348956459349e7d71",
+		"raw_githubusercontent_com_443",
+		string(wasmConfigJSON)))
 
 	//
 	// Wasm Binary Cluster patch
 	//
-	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches, kuadrantenvoygateway.WasmBinarySourceClusterPatch())
+	pathPolicy.Spec.JSONPatches = append(pathPolicy.Spec.JSONPatches,
+		kuadrantenvoygateway.WasmBinarySourceClusterPatch(
+			"raw_githubusercontent_com_443",
+			"raw.githubusercontent.com",
+			443,
+		),
+	)
 
 	// controller reference
 	if err := r.SetOwnerReference(gw, pathPolicy); err != nil {
 		return nil, err
 	}
 
-	return nil, nil
+	return pathPolicy, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
