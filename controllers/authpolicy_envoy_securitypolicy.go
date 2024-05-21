@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	egapi "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/go-logr/logr"
@@ -22,23 +23,16 @@ import (
 )
 
 func (r *AuthPolicyReconciler) reconcileEnvoySecurityPolicies(ctx context.Context, ap *api.AuthPolicy, targetNetworkObject client.Object, gwDiffObj *reconcilers.GatewayDiffs) error {
-
 	if err := r.deleteEnvoySecurityPolicies(ctx, ap, gwDiffObj); err != nil {
 		return err
 	}
-
 	logger, err := logr.FromContext(ctx)
 	if err != nil {
 		return err
 	}
-
 	// Create EnvoySecurityPolicy for each gateway directly or indirectly referred by the policy (existing and new)
 	for _, gw := range append(gwDiffObj.GatewaysWithValidPolicyRef, gwDiffObj.GatewaysMissingPolicyRef...) {
 		esp, err := r.envoySecurityPolicy(ctx, ap, targetNetworkObject, gw)
-		if err != nil {
-			return err
-		}
-		rg, err := r.gatewayReferenceGrant(ctx, esp, ap, gw)
 		if err != nil {
 			return err
 		}
@@ -46,13 +40,15 @@ func (r *AuthPolicyReconciler) reconcileEnvoySecurityPolicies(ctx context.Contex
 			logger.Error(err, "failed to reconcile EnvoySecurityPolicy resource")
 			return err
 		}
+		rg, err := r.securityPolicyReferenceGrant(ctx, esp, ap, gw)
+		if err != nil {
+			return err
+		}
 		if err := r.ReconcileResource(ctx, &gatewayapiv1beta1.ReferenceGrant{}, rg, alwaysUpdateGatewayReferenceGrant); err != nil && !apierrors.IsAlreadyExists(err) {
 			logger.Error(err, "failed to reconcile gatewayapi ReferenceGrant resource")
 			return err
 		}
-
 	}
-
 	return nil
 }
 
@@ -62,14 +58,12 @@ func (r *AuthPolicyReconciler) deleteEnvoySecurityPolicies(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-
 	for _, gw := range gwDiffObj.GatewaysWithInvalidPolicyRef {
 		listOptions := &client.ListOptions{LabelSelector: labels.SelectorFromSet(istioAuthorizationPolicyLabels(client.ObjectKeyFromObject(gw.Gateway), client.ObjectKeyFromObject(ap)))}
 		espList := &egapi.SecurityPolicyList{}
 		if err := r.Client().List(ctx, espList, listOptions); err != nil {
 			return err
 		}
-
 		for _, esp := range espList.Items {
 			// it's OK to just go ahead and delete because we only create one ESP per target network object,
 			// and a network object can be targeted by no more than one AuthPolicy
@@ -79,7 +73,6 @@ func (r *AuthPolicyReconciler) deleteEnvoySecurityPolicies(ctx context.Context, 
 				return err
 			}
 		}
-
 		rgList := &gatewayapiv1beta1.ReferenceGrantList{}
 		if err := r.Client().List(ctx, rgList, listOptions); err != nil {
 			return err
@@ -92,7 +85,6 @@ func (r *AuthPolicyReconciler) deleteEnvoySecurityPolicies(ctx context.Context, 
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -113,22 +105,17 @@ func (r *AuthPolicyReconciler) envoySecurityPolicy(ctx context.Context, ap *api.
 		}
 	}
 
-	targetRef := gatewayapiv1alpha2.PolicyTargetReferenceWithSectionName{
-		PolicyTargetReference: gatewayapiv1alpha2.PolicyTargetReference{
-			Group: gatewayapiv1.GroupName,
-			Kind:  gatewayapiv1.Kind("Gateway"),
-			Name:  gatewayapiv1.ObjectName(gateway.Name),
-		},
-	}
-
 	esp := &egapi.SecurityPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      istioAuthorizationPolicyName(gateway.Name, ap.GetTargetRef()),
-			Namespace: gateway.Namespace,
+			Namespace: targetNetworkObject.GetNamespace(),
 			Labels:    istioAuthorizationPolicyLabels(client.ObjectKeyFromObject(gateway), client.ObjectKeyFromObject(ap)),
 		},
 		Spec: egapi.SecurityPolicySpec{
-			TargetRef: targetRef,
+			TargetRef: gatewayapiv1alpha2.PolicyTargetReferenceWithSectionName{
+				PolicyTargetReference: ap.GetTargetRef(),
+				SectionName:           nil,
+			},
 			ExtAuth: &egapi.ExtAuth{
 				GRPC: &egapi.GRPCExtAuthService{
 					BackendRef: gatewayapiv1.BackendObjectReference{
@@ -160,18 +147,23 @@ func (r *AuthPolicyReconciler) envoySecurityPolicy(ctx context.Context, ap *api.
 			utils.TagObjectToDelete(esp)
 			return esp, nil
 		}
+	case *gatewayapiv1.HTTPRoute:
+		// Check that the gateway is not targetted by an AP, if so do not create
+		if gateway.GetAnnotations()[common.AuthPolicyBackRefAnnotation] != "" {
+			logger.V(1).Info("gateway for route has authpolicy, skipping envoy securitypolicy for the route authpolicy")
+			utils.TagObjectToDelete(esp)
+			return esp, nil
+		}
 	}
-
 	return esp, nil
 }
 
-func (r *AuthPolicyReconciler) gatewayReferenceGrant(ctx context.Context, esp *egapi.SecurityPolicy, ap *api.AuthPolicy, gw kuadrant.GatewayWrapper) (*gatewayapiv1beta1.ReferenceGrant, error) {
+func (r *AuthPolicyReconciler) securityPolicyReferenceGrant(ctx context.Context, esp *egapi.SecurityPolicy, ap *api.AuthPolicy, gw kuadrant.GatewayWrapper) (*gatewayapiv1beta1.ReferenceGrant, error) {
 	logger, _ := logr.FromContext(ctx)
-	logger = logger.WithName("gatewayReferenceGrant")
+	logger = logger.WithName("securityPolicyReferenceGrant")
 
 	gateway := gw.Gateway
 	espTargetNamespace := string(*esp.Spec.ExtAuth.GRPC.BackendRef.Namespace)
-
 	rg := &gatewayapiv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-rg", esp.Name),
@@ -200,12 +192,70 @@ func (r *AuthPolicyReconciler) gatewayReferenceGrant(ctx context.Context, esp *e
 			},
 		},
 	}
-
-	if gateway.Namespace == espTargetNamespace {
-		logger.V(1).Info("gateway is in target namespace for authorino service, skipping ReferenceGrant for the envoy SecurityPolicy")
+	if esp.Namespace == espTargetNamespace {
+		logger.V(1).Info("security policy is in target namespace for authorino service, skipping ReferenceGrant")
 		utils.TagObjectToDelete(rg)
 		return rg, nil
 	}
-
 	return rg, nil
+}
+
+func alwaysUpdateEnvoySecurityPolicy(existingObj, desiredObj client.Object) (bool, error) {
+	existing, ok := existingObj.(*egapi.SecurityPolicy)
+	if !ok {
+		return false, fmt.Errorf("%T is not an *egapi.SecurityPolicy", existingObj)
+	}
+	desired, ok := desiredObj.(*egapi.SecurityPolicy)
+	if !ok {
+		return false, fmt.Errorf("%T is not an *egapi.SecurityPolicy", desiredObj)
+	}
+
+	var update bool
+
+	if !reflect.DeepEqual(existing.Spec.ExtAuth, desired.Spec.ExtAuth) {
+		update = true
+		existing.Spec.ExtAuth = desired.Spec.ExtAuth
+	}
+
+	if !reflect.DeepEqual(existing.Spec.TargetRef, desired.Spec.TargetRef) {
+		update = true
+		existing.Spec.TargetRef = desired.Spec.TargetRef
+	}
+
+	if !reflect.DeepEqual(existing.Annotations, desired.Annotations) {
+		update = true
+		existing.Annotations = desired.Annotations
+	}
+
+	return update, nil
+}
+
+func alwaysUpdateGatewayReferenceGrant(existingObj, desiredObj client.Object) (bool, error) {
+	existing, ok := existingObj.(*gatewayapiv1beta1.ReferenceGrant)
+	if !ok {
+		return false, fmt.Errorf("%T is not an *gatewayapiv1beta1.ReferenceGrant", existingObj)
+	}
+	desired, ok := desiredObj.(*gatewayapiv1beta1.ReferenceGrant)
+	if !ok {
+		return false, fmt.Errorf("%T is not an *gatewayapiv1beta1.ReferenceGrant", desiredObj)
+	}
+
+	var update bool
+
+	if !reflect.DeepEqual(existing.Spec.From, desired.Spec.From) {
+		update = true
+		existing.Spec.From = desired.Spec.From
+	}
+
+	if !reflect.DeepEqual(existing.Spec.To, desired.Spec.To) {
+		update = true
+		existing.Spec.To = desired.Spec.To
+	}
+
+	if !reflect.DeepEqual(existing.Annotations, desired.Annotations) {
+		update = true
+		existing.Annotations = desired.Annotations
+	}
+
+	return update, nil
 }

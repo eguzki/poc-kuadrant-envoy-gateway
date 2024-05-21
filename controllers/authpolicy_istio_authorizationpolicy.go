@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 
-	egapi "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/go-logr/logr"
 	istiosecurity "istio.io/api/security/v1beta1"
 	istio "istio.io/client-go/pkg/apis/security/v1beta1"
@@ -17,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-	gatewayapiv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	api "github.com/kuadrant/kuadrant-operator/api/v1beta2"
 	"github.com/kuadrant/kuadrant-operator/pkg/common"
@@ -377,66 +375,6 @@ func alwaysUpdateAuthPolicy(existingObj, desiredObj client.Object) (bool, error)
 	if !reflect.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
 		update = true
 		existing.Spec.Selector = desired.Spec.Selector
-	}
-
-	if !reflect.DeepEqual(existing.Annotations, desired.Annotations) {
-		update = true
-		existing.Annotations = desired.Annotations
-	}
-
-	return update, nil
-}
-
-func alwaysUpdateEnvoySecurityPolicy(existingObj, desiredObj client.Object) (bool, error) {
-	existing, ok := existingObj.(*egapi.SecurityPolicy)
-	if !ok {
-		return false, fmt.Errorf("%T is not an *egapi.SecurityPolicy", existingObj)
-	}
-	desired, ok := desiredObj.(*egapi.SecurityPolicy)
-	if !ok {
-		return false, fmt.Errorf("%T is not an *egapi.SecurityPolicy", desiredObj)
-	}
-
-	var update bool
-
-	if !reflect.DeepEqual(existing.Spec.ExtAuth, desired.Spec.ExtAuth) {
-		update = true
-		existing.Spec.ExtAuth = desired.Spec.ExtAuth
-	}
-
-	if !reflect.DeepEqual(existing.Spec.TargetRef, desired.Spec.TargetRef) {
-		update = true
-		existing.Spec.TargetRef = desired.Spec.TargetRef
-	}
-
-	if !reflect.DeepEqual(existing.Annotations, desired.Annotations) {
-		update = true
-		existing.Annotations = desired.Annotations
-	}
-
-	return update, nil
-}
-
-func alwaysUpdateGatewayReferenceGrant(existingObj, desiredObj client.Object) (bool, error) {
-	existing, ok := existingObj.(*gatewayapiv1beta1.ReferenceGrant)
-	if !ok {
-		return false, fmt.Errorf("%T is not an *gatewayapiv1beta1.ReferenceGrant", existingObj)
-	}
-	desired, ok := desiredObj.(*gatewayapiv1beta1.ReferenceGrant)
-	if !ok {
-		return false, fmt.Errorf("%T is not an *gatewayapiv1beta1.ReferenceGrant", desiredObj)
-	}
-
-	var update bool
-
-	if !reflect.DeepEqual(existing.Spec.From, desired.Spec.From) {
-		update = true
-		existing.Spec.From = desired.Spec.From
-	}
-
-	if !reflect.DeepEqual(existing.Spec.To, desired.Spec.To) {
-		update = true
-		existing.Spec.To = desired.Spec.To
 	}
 
 	if !reflect.DeepEqual(existing.Annotations, desired.Annotations) {
