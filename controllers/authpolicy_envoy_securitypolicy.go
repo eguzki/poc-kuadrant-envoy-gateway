@@ -44,7 +44,7 @@ func (r *AuthPolicyReconciler) reconcileEnvoySecurityPolicies(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		if err := r.ReconcileResource(ctx, &gatewayapiv1beta1.ReferenceGrant{}, rg, alwaysUpdateGatewayReferenceGrant); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.ReconcileResource(ctx, &gatewayapiv1beta1.ReferenceGrant{}, rg, modifyAuthReferenceGrant); err != nil && !apierrors.IsAlreadyExists(err) {
 			logger.Error(err, "failed to reconcile gatewayapi ReferenceGrant resource")
 			return err
 		}
@@ -166,7 +166,7 @@ func (r *AuthPolicyReconciler) securityPolicyReferenceGrant(ctx context.Context,
 	espTargetNamespace := string(*esp.Spec.ExtAuth.GRPC.BackendRef.Namespace)
 	rg := &gatewayapiv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-rg", esp.Name),
+			Name:      "kuadrant-authorization-rg",
 			Namespace: espTargetNamespace,
 			Labels:    istioAuthorizationPolicyLabels(client.ObjectKeyFromObject(gateway), client.ObjectKeyFromObject(ap)),
 		},
@@ -230,7 +230,7 @@ func alwaysUpdateEnvoySecurityPolicy(existingObj, desiredObj client.Object) (boo
 	return update, nil
 }
 
-func alwaysUpdateGatewayReferenceGrant(existingObj, desiredObj client.Object) (bool, error) {
+func modifyAuthReferenceGrant(existingObj, desiredObj client.Object) (bool, error) {
 	existing, ok := existingObj.(*gatewayapiv1beta1.ReferenceGrant)
 	if !ok {
 		return false, fmt.Errorf("%T is not an *gatewayapiv1beta1.ReferenceGrant", existingObj)
@@ -241,10 +241,11 @@ func alwaysUpdateGatewayReferenceGrant(existingObj, desiredObj client.Object) (b
 	}
 
 	var update bool
-
-	if !reflect.DeepEqual(existing.Spec.From, desired.Spec.From) {
-		update = true
-		existing.Spec.From = desired.Spec.From
+	for _, from := range desired.Spec.From {
+		if !containsReferenceGrantFrom(existing.Spec.From, from) {
+			update = true
+			existing.Spec.From = append(existing.Spec.From, from)
+		}
 	}
 
 	if !reflect.DeepEqual(existing.Spec.To, desired.Spec.To) {
@@ -258,4 +259,13 @@ func alwaysUpdateGatewayReferenceGrant(existingObj, desiredObj client.Object) (b
 	}
 
 	return update, nil
+}
+
+func containsReferenceGrantFrom(existing []gatewayapiv1beta1.ReferenceGrantFrom, new gatewayapiv1beta1.ReferenceGrantFrom) bool {
+	for _, from := range existing {
+		if reflect.DeepEqual(from, new) {
+			return true
+		}
+	}
+	return false
 }
