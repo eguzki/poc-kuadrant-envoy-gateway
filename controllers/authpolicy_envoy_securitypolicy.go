@@ -130,25 +130,15 @@ func (r *AuthPolicyReconciler) envoySecurityPolicy(ctx context.Context, ap *api.
 
 	switch targetNetworkObject.(type) {
 	case *gatewayapiv1.Gateway:
-		// fake a single httproute with all rules from all httproutes accepted by the gateway,
-		// that do not have an authpolicy of its own, so we can generate wasm rules for those cases
-		rules := make([]gatewayapiv1.HTTPRouteRule, 0)
+		// Check there is at least one httproute attached to the gateway
 		routes := r.TargetRefReconciler.FetchAcceptedGatewayHTTPRoutes(ctx, ap.TargetKey())
-		for idx := range routes {
-			route := routes[idx]
-			// skip routes that have an authpolicy of its own
-			if route.GetAnnotations()[common.AuthPolicyBackRefAnnotation] != "" {
-				continue
-			}
-			rules = append(rules, route.Spec.Rules...)
-		}
-		if len(rules) == 0 {
+		if len(routes) == 0 {
 			logger.V(1).Info("no httproutes attached to the targeted gateway, skipping envoy securitypolicy for the gateway authpolicy")
 			utils.TagObjectToDelete(esp)
 			return esp, nil
 		}
 	case *gatewayapiv1.HTTPRoute:
-		// Check that the gateway is not targetted by an AP, if so do not create
+		// Check that the gateway is not targetted by an AP, if so tag for deletion
 		if gateway.GetAnnotations()[common.AuthPolicyBackRefAnnotation] != "" {
 			logger.V(1).Info("gateway for route has authpolicy, skipping envoy securitypolicy for the route authpolicy")
 			utils.TagObjectToDelete(esp)
