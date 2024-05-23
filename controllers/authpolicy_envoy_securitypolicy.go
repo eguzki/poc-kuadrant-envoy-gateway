@@ -158,6 +158,8 @@ func (r *AuthPolicyReconciler) envoySecurityPolicy(ctx context.Context, ap *api.
 	return esp, nil
 }
 
+// Creates a reference grant permitting access to the authorino service from the security group namespace
+// This is required for both xRoutes as well as Gateways, however this may not be required for gateways in future - see https://github.com/envoyproxy/gateway/issues/3450
 func (r *AuthPolicyReconciler) securityPolicyReferenceGrant(ctx context.Context, esp *egapi.SecurityPolicy, ap *api.AuthPolicy, gw kuadrant.GatewayWrapper) (*gatewayapiv1beta1.ReferenceGrant, error) {
 	logger, _ := logr.FromContext(ctx)
 	logger = logger.WithName("securityPolicyReferenceGrant")
@@ -172,11 +174,6 @@ func (r *AuthPolicyReconciler) securityPolicyReferenceGrant(ctx context.Context,
 		},
 		Spec: gatewayapiv1beta1.ReferenceGrantSpec{
 			From: []gatewayapiv1beta1.ReferenceGrantFrom{
-				{
-					Group:     gatewayapiv1.GroupName,
-					Kind:      "HTTPRoute", // must be HTTPRoute to be tracked by envoy-gateway
-					Namespace: gatewayapiv1.Namespace(esp.Namespace),
-				},
 				{
 					Group:     egapi.GroupName,          // must be envoy-gateway group name
 					Kind:      egapi.KindSecurityPolicy, // must be kind SecurityPolicy
