@@ -1,9 +1,6 @@
 package wasm
 
 import (
-	"encoding/json"
-
-	_struct "google.golang.org/protobuf/types/known/structpb"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kuadrantv1beta2 "github.com/kuadrant/kuadrant-operator/api/v1beta2"
@@ -97,20 +94,7 @@ const (
 	FailureModeAllow FailureModeType = "allow"
 )
 
-type Plugin struct {
+type Config struct {
 	FailureMode       FailureModeType   `json:"failureMode"`
 	RateLimitPolicies []RateLimitPolicy `json:"rateLimitPolicies"`
-}
-
-func (w *Plugin) ToStruct() (*_struct.Struct, error) {
-	wasmPluginJSON, err := json.Marshal(w)
-	if err != nil {
-		return nil, err
-	}
-
-	pluginConfigStruct := &_struct.Struct{}
-	if err := pluginConfigStruct.UnmarshalJSON(wasmPluginJSON); err != nil {
-		return nil, err
-	}
-	return pluginConfigStruct, nil
 }

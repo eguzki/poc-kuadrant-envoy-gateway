@@ -1,12 +1,19 @@
 package kuadranttools
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 
-	"github.com/kuadrant/kuadrant-operator/api/v1beta1"
-	limitadorv1alpha1 "github.com/kuadrant/limitador-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/go-logr/logr"
+	limitadorv1alpha1 "github.com/kuadrant/limitador-operator/api/v1alpha1"
+
+	"github.com/kuadrant/kuadrant-operator/api/v1beta1"
+	kuadrantv1beta1 "github.com/kuadrant/kuadrant-operator/api/v1beta1"
+	"github.com/kuadrant/kuadrant-operator/pkg/common"
 )
 
 func LimitadorMutator(existingObj, desiredObj client.Object) (bool, error) {
@@ -50,4 +57,25 @@ func limitadorSpecSubSet(spec limitadorv1alpha1.LimitadorSpec) v1beta1.Limitador
 	out.Storage = spec.Storage
 
 	return out
+}
+
+func LimitadorLocation(ctx context.Context, cl client.Client, kObj *kuadrantv1beta1.Kuadrant) (*limitadorv1alpha1.Limitador, error) {
+	logger, err := logr.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	limitadorKey := client.ObjectKey{Name: common.LimitadorName, Namespace: kObj.Namespace}
+	limitador := &limitadorv1alpha1.Limitador{}
+	err = cl.Get(ctx, limitadorKey, limitador)
+	logger.V(1).Info("read limitador", "key", limitadorKey, "err", err)
+	if err != nil {
+		return nil, err
+	}
+
+	if !meta.IsStatusConditionTrue(limitador.Status.Conditions, "Ready") {
+		return nil, fmt.Errorf("limitador Status not ready")
+	}
+
+	return limitador, nil
 }

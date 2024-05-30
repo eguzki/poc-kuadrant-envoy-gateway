@@ -19,33 +19,28 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"sort"
 
 	"github.com/go-logr/logr"
 	istioextensionsv1alpha1 "istio.io/api/extensions/v1alpha1"
 	istioclientgoextensionv1alpha1 "istio.io/client-go/pkg/apis/extensions/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
+	"k8s.io/utils/env"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kuadrantv1beta2 "github.com/kuadrant/kuadrant-operator/api/v1beta2"
-	"github.com/kuadrant/kuadrant-operator/pkg/common"
 	kuadrantistioutils "github.com/kuadrant/kuadrant-operator/pkg/istio"
-	kuadrantgatewayapi "github.com/kuadrant/kuadrant-operator/pkg/library/gatewayapi"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/mappers"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/reconcilers"
 	"github.com/kuadrant/kuadrant-operator/pkg/library/utils"
-	"github.com/kuadrant/kuadrant-operator/pkg/rlptools"
 	"github.com/kuadrant/kuadrant-operator/pkg/rlptools/wasm"
 )
 
-const (
-	HTTPRouteGatewayParentField = ".metadata.parentRefs.gateway"
+var (
+	WASMFilterImageURL = env.GetString("RELATED_IMAGE_WASMSHIM", "oci://quay.io/kuadrant/wasm-shim:latest")
 )
 
 // RateLimitingWASMPluginReconciler reconciles a WASMPlugin object for rate limiting
@@ -88,7 +83,7 @@ func (r *RateLimitingWASMPluginReconciler) Reconcile(eventCtx context.Context, r
 		return ctrl.Result{}, err
 	}
 
-	err = r.ReconcileResource(ctx, &istioclientgoextensionv1alpha1.WasmPlugin{}, desired, rlptools.WASMPluginMutator)
+	err = r.ReconcileResource(ctx, &istioclientgoextensionv1alpha1.WasmPlugin{}, desired, kuadrantistioutils.WASMPluginMutator)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -109,12 +104,12 @@ func (r *RateLimitingWASMPluginReconciler) desiredRateLimitingWASMPlugin(ctx con
 			APIVersion: "extensions.istio.io/v1alpha1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      rlptools.WASMPluginName(gw),
+			Name:      kuadrantistioutils.WASMPluginName(gw),
 			Namespace: gw.Namespace,
 		},
 		Spec: istioextensionsv1alpha1.WasmPlugin{
 			Selector:     kuadrantistioutils.WorkloadSelectorFromGateway(ctx, r.Client(), gw),
-			Url:          rlptools.WASMFilterImageURL,
+			Url:          WASMFilterImageURL,
 			PluginConfig: nil,
 			// Insert plugin before Istio stats filters and after Istio authorization filters.
 			Phase: istioextensionsv1alpha1.PluginPhase_STATS,
@@ -123,7 +118,7 @@ func (r *RateLimitingWASMPluginReconciler) desiredRateLimitingWASMPlugin(ctx con
 
 	logger := baseLogger.WithValues("wasmplugin", client.ObjectKeyFromObject(wasmPlugin))
 
-	pluginConfig, err := r.wasmPluginConfig(ctx, gw)
+	pluginConfig, err := wasm.ConfigFromGateway(ctx, r.Client(), gw)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +129,7 @@ func (r *RateLimitingWASMPluginReconciler) desiredRateLimitingWASMPlugin(ctx con
 		return wasmPlugin, nil
 	}
 
-	pluginConfigStruct, err := pluginConfig.ToStruct()
+	pluginConfigStruct, err := kuadrantistioutils.WasmConfigToStruct(pluginConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -149,209 +144,15 @@ func (r *RateLimitingWASMPluginReconciler) desiredRateLimitingWASMPlugin(ctx con
 	return wasmPlugin, nil
 }
 
-func (r *RateLimitingWASMPluginReconciler) wasmPluginConfig(ctx context.Context, gw *gatewayapiv1.Gateway) (*wasm.Plugin, error) {
-	logger, err := logr.FromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	wasmPlugin := &wasm.Plugin{
-		FailureMode:       wasm.FailureModeDeny,
-		RateLimitPolicies: make([]wasm.RateLimitPolicy, 0),
-	}
-
-	t, err := r.topologyIndexesFromGateway(ctx, gw)
-	if err != nil {
-		return nil, err
-	}
-
-	rateLimitPolicies := t.PoliciesFromGateway(gw)
-
-	logger.V(1).Info("wasmPluginConfig", "#RLPS", len(rateLimitPolicies))
-
-	// Sort RLPs for consistent comparison with existing objects
-	sort.Sort(kuadrantgatewayapi.PolicyByCreationTimestamp(rateLimitPolicies))
-
-	for _, policy := range rateLimitPolicies {
-		rlp := policy.(*kuadrantv1beta2.RateLimitPolicy)
-		wasmRLP, err := r.wasmRateLimitPolicy(ctx, t, rlp, gw)
-		if err != nil {
-			return nil, err
-		}
-
-		if wasmRLP == nil {
-			// skip this RLP
-			continue
-		}
-
-		wasmPlugin.RateLimitPolicies = append(wasmPlugin.RateLimitPolicies, *wasmRLP)
-	}
-
-	return wasmPlugin, nil
-}
-
-func (r *RateLimitingWASMPluginReconciler) topologyIndexesFromGateway(ctx context.Context, gw *gatewayapiv1.Gateway) (*kuadrantgatewayapi.TopologyIndexes, error) {
-	logger, err := logr.FromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	routeList := &gatewayapiv1.HTTPRouteList{}
-	// Get all the routes having the gateway as parent
-	err = r.Client().List(ctx, routeList, client.MatchingFields{HTTPRouteGatewayParentField: client.ObjectKeyFromObject(gw).String()})
-	logger.V(1).Info("topologyIndexesFromGateway: list httproutes from gateway",
-		"gateway", client.ObjectKeyFromObject(gw),
-		"#HTTPRoutes", len(routeList.Items),
-		"err", err)
-	if err != nil {
-		return nil, err
-	}
-
-	rlpList := &kuadrantv1beta2.RateLimitPolicyList{}
-	// Get all the rate limit policies
-	err = r.Client().List(ctx, rlpList)
-	logger.V(1).Info("topologyIndexesFromGateway: list rate limit policies",
-		"#RLPS", len(rlpList.Items),
-		"err", err)
-	if err != nil {
-		return nil, err
-	}
-
-	policies := utils.Map(rlpList.Items, func(p kuadrantv1beta2.RateLimitPolicy) kuadrantgatewayapi.Policy { return &p })
-
-	t, err := kuadrantgatewayapi.NewTopology(
-		kuadrantgatewayapi.WithGateways([]*gatewayapiv1.Gateway{gw}),
-		kuadrantgatewayapi.WithRoutes(utils.Map(routeList.Items, ptr.To[gatewayapiv1.HTTPRoute])),
-		kuadrantgatewayapi.WithPolicies(policies),
-		kuadrantgatewayapi.WithLogger(logger),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return kuadrantgatewayapi.NewTopologyIndexes(t), nil
-}
-
-func (r *RateLimitingWASMPluginReconciler) wasmRateLimitPolicy(ctx context.Context, t *kuadrantgatewayapi.TopologyIndexes, rlp *kuadrantv1beta2.RateLimitPolicy, gw *gatewayapiv1.Gateway) (*wasm.RateLimitPolicy, error) {
-	route, err := r.routeFromRLP(ctx, t, rlp, gw)
-	if err != nil {
-		return nil, err
-	}
-	if route == nil {
-		// no need to add the policy if there are no routes;
-		// a rlp can return no rules if all its limits fail to match any route rule
-		// or targeting a gateway with no "free" routes. "free" meaning no route with policies targeting it
-		return nil, nil
-	}
-
-	// narrow the list of hostnames specified in the route so we don't generate wasm rules that only apply to other gateways
-	// this is a no-op for the gateway rlp
-	gwHostnames := kuadrantgatewayapi.GatewayHostnames(gw)
-	if len(gwHostnames) == 0 {
-		gwHostnames = []gatewayapiv1.Hostname{"*"}
-	}
-	hostnames := kuadrantgatewayapi.FilterValidSubdomains(gwHostnames, route.Spec.Hostnames)
-	if len(hostnames) == 0 { // it should only happen when the route specifies no hostnames
-		hostnames = gwHostnames
-	}
-
-	//
-	// The route selectors logic rely on the "hostnames" field of the route object.
-	// However, routes effective hostname can be inherited from parent gateway,
-	// hence it depends on the context as multiple gateways can be targeted by a route
-	// The route selectors logic needs to be refactored
-	// or just deleted as soon as the HTTPRoute has name in the route object
-	//
-	routeWithEffectiveHostnames := route.DeepCopy()
-	routeWithEffectiveHostnames.Spec.Hostnames = hostnames
-
-	rules := rlptools.WasmRules(rlp, routeWithEffectiveHostnames)
-	if len(rules) == 0 {
-		// no need to add the policy if there are no rules; a rlp can return no rules if all its limits fail to match any route rule
-		return nil, nil
-	}
-
-	return &wasm.RateLimitPolicy{
-		Name:      client.ObjectKeyFromObject(rlp).String(),
-		Domain:    rlptools.LimitsNamespaceFromRLP(rlp),
-		Hostnames: utils.HostnamesToStrings(hostnames), // we might be listing more hostnames than needed due to route selectors hostnames possibly being more restrictive
-		Service:   common.KuadrantRateLimitClusterName,
-		Rules:     rules,
-	}, nil
-}
-
-func (r *RateLimitingWASMPluginReconciler) routeFromRLP(ctx context.Context, t *kuadrantgatewayapi.TopologyIndexes, rlp *kuadrantv1beta2.RateLimitPolicy, gw *gatewayapiv1.Gateway) (*gatewayapiv1.HTTPRoute, error) {
-	logger, err := logr.FromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	route := t.GetPolicyHTTPRoute(rlp)
-
-	if route == nil {
-		// The policy is targeting a gateway
-		// This gateway policy will be enforced into all HTTPRoutes that do not have a policy attached to it
-
-		// Build imaginary route with all the routes not having a RLP targeting it
-		untargetedRoutes := t.GetUntargetedRoutes(gw)
-
-		if len(untargetedRoutes) == 0 {
-			// For policies targeting a gateway, when no httproutes is attached to the gateway, skip wasm config
-			// test wasm config when no http routes attached to the gateway
-			logger.V(1).Info("no untargeted httproutes attached to the targeted gateway, skipping wasm config for the gateway rlp", "ratelimitpolicy", client.ObjectKeyFromObject(rlp))
-			return nil, nil
-		}
-
-		untargetedRules := make([]gatewayapiv1.HTTPRouteRule, 0)
-		for idx := range untargetedRoutes {
-			untargetedRules = append(untargetedRules, untargetedRoutes[idx].Spec.Rules...)
-		}
-
-		gwHostnamesTmp := kuadrantgatewayapi.TargetHostnames(gw)
-		gwHostnames := utils.Map(gwHostnamesTmp, func(str string) gatewayapiv1.Hostname { return gatewayapiv1.Hostname(str) })
-		route = &gatewayapiv1.HTTPRoute{
-			Spec: gatewayapiv1.HTTPRouteSpec{
-				Hostnames: gwHostnames,
-				Rules:     untargetedRules,
-			},
-		}
-	}
-
-	return route, nil
-}
-
-// addHTTPRouteByGatewayIndexer declares an index key that we can later use with the client as a pseudo-field name,
-// allowing to query all the routes parented by a given gateway
-// to prevent creating the same index field multiple times, the function is declared private to be
-// called only by this controller
-func addHTTPRouteByGatewayIndexer(mgr ctrl.Manager, baseLogger logr.Logger) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayapiv1.HTTPRoute{}, HTTPRouteGatewayParentField, func(rawObj client.Object) []string {
-		// grab the route object, extract the parents
-		route, assertionOk := rawObj.(*gatewayapiv1.HTTPRoute)
-		if !assertionOk {
-			baseLogger.V(1).Error(fmt.Errorf("%T is not a *gatewayapiv1.HTTPRoute", rawObj), "cannot map")
-			return nil
-		}
-
-		logger := baseLogger.WithValues("route", client.ObjectKeyFromObject(route).String())
-
-		return utils.Map(kuadrantgatewayapi.GetRouteAcceptedGatewayParentKeys(route), func(key client.ObjectKey) string {
-			logger.V(1).Info("new gateway added", "key", key.String())
-			return key.String()
-		})
-	}); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *RateLimitingWASMPluginReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Add custom indexer
-	err := addHTTPRouteByGatewayIndexer(mgr, r.Logger().WithName("routeByGatewayIndexer"))
+	ok, err := kuadrantistioutils.IsIstioWASMPluginInstalled(mgr.GetRESTMapper())
 	if err != nil {
 		return err
+	}
+	if !ok {
+		r.Logger().Info("Istio WasmPlugin controller disabled. Istio was not found")
+		return nil
 	}
 
 	httpRouteToParentGatewaysEventMapper := mappers.NewHTTPRouteToParentGatewaysEventMapper(
