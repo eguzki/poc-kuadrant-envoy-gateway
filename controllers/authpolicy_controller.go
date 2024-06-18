@@ -192,7 +192,7 @@ func (r *AuthPolicyReconciler) deleteResources(ctx context.Context, ap *api.Auth
 	// if err := r.deleteIstioAuthorizationPolicies(ctx, ap, gatewayDiffObj); err != nil {
 	// 	return err
 	// }
-	if err := r.deleteEnvoySecurityPolicies(ctx, ap, gatewayDiffObj); err != nil {
+	if err := r.reconcileEnvoySecurityPolicies(ctx, ap, targetNetworkObject, gatewayDiffObj); err != nil {
 		return err
 	}
 
